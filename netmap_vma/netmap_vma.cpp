@@ -56,6 +56,8 @@
 #include <sys/time.h>
 #include <signal.h>
 #include <linux/if_ether.h>
+#include <ifaddrs.h>
+#include <netdb.h>
 #include <linux/if_packet.h>
 #include <netinet/udp.h>
 #include <netinet/ip.h>
@@ -302,6 +304,7 @@ static int OpenRxSocket(int ring_id, sockaddr_in* addr, uint32_t ssm, const char
 		RxSocket = 0;
 		return 0;
 	}
+
 	return RxSocket;
 }
 
@@ -340,6 +343,8 @@ static void destroyFlows(CommonCyclicRing* rings[])
 	}
 }
 
+#define	DEFAULT_PORT	2000
+
 static CommonCyclicRing* pRings[MAX_RINGS];
 static void init_ring_helper(CommonCyclicRing* pRing);
 
@@ -350,20 +355,102 @@ struct nm_desc *nm_open_vma(const char *nm_ifname, const struct nmreq *req, uint
 	NOT_IN_USE(flags);
 	NOT_IN_USE(arg);
 
+	char *opts = NULL;
+	char *nm_ring = NULL;
+	char *nm_port = NULL;
+	char nm_mode = ' ';
+	char ifname[IFNAMSIZ];
+	char nm_ring_val[10];
+	u_int namelen;
 	struct nm_desc *d = NULL;
+	int nm_ring_len = 0;
+	int nm_ring_set = 0;
+	struct ifaddrs *ifaddr, *ifa;
+	char host[NI_MAXHOST];
+
 	d = (struct nm_desc *)calloc(1, sizeof(*d));
 	if (d == NULL) {
 		errno = ENOMEM;
 		return NULL;
 	}
 
-	char *ifname = (char *)nm_ifname;
-//	char *token = std::strtok((char*)nm_ifname, ":");
-//	while (token != NULL) {
-//		ifname = token;
-//		token = std::strtok(NULL, ":");
-//	}
-//	printf("===>ifname=%s\n", ifname);
+	if (strncmp(nm_ifname, "netmap:", 7)) {
+		errno = 0;
+		printf("name not recognised\n");
+		return NULL;
+	}
+	nm_ifname += 7;
+	opts = (char*)nm_ifname;
+	for (; *opts && !index("-", *opts) ; opts++);
+	namelen = opts - nm_ifname;
+	if (namelen >= sizeof(d->req.nr_name)) {
+		printf("name too long\n");
+		return NULL;
+	} else {
+		memcpy(ifname, nm_ifname, namelen);
+		ifname[namelen] = '\0';
+		memcpy(d->req.nr_name, nm_ifname, namelen);
+		d->req.nr_name[namelen] = '\0';
+	}
+
+	while(*opts) {
+		switch (*opts) {
+			case '-':
+					nm_ring = ++opts;
+					nm_ring_set = 1;
+					break;
+			case '/':
+					if (nm_ring_set--) nm_ring_len = opts - nm_ring;
+					nm_mode = *(opts +1);
+					break;
+			case ':':
+					if (nm_ring_set--) nm_ring_len = opts - nm_ring;
+					nm_port = ++opts;
+					break;
+			default:
+					break;
+		}
+		opts++;
+	}
+
+	std::string nmring;
+	nmring.append(nm_ring, nm_ring_len);
+
+	string nmport;
+	if ( nm_port == NULL) {
+		string default_port;
+		cout << default_port << DEFAULT_PORT << endl;
+		nmport.append(default_port);
+	} else
+		nmport.append(nm_port);
+
+	memcpy(nm_ring_val, nm_ring, nm_ring_len);
+	nm_ring_val[nm_ring_len] = '\0';
+
+	printf("nm_ring_val=%s nm_mode=%c nm_port=%s\n", nm_ring_val, nm_mode, nm_port);
+
+	if (getifaddrs(&ifaddr) == -1) {
+		printf("error getifaddrs\n");
+		return NULL;
+	}
+	for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
+		int ret;
+		if (ifa->ifa_addr == NULL)
+			continue;
+		ret = getnameinfo(ifa->ifa_addr, sizeof(struct sockaddr_in), host, NI_MAXHOST, NULL, 0, NI_NUMERICHOST);
+		if ((strcmp(ifa->ifa_name, ifname) == 0) && (ifa->ifa_addr->sa_family == AF_INET)) {
+			if (ret != 0) {
+				printf("error getnameinfo\n");
+				return NULL;
+			}
+		}
+	}
+	freeifaddrs(ifaddr);
+
+	string opts_line;
+	opts_line.append(host);
+	opts_line = opts_line + " " + nmport + " " + nmring;
+	//cout << "opts_line" << opts_line << '\n';
 
 	bool ringPerFd = false;
 	for (int j = 0; j < MAX_RINGS; j++) {
@@ -379,20 +466,28 @@ struct nm_desc *nm_open_vma(const char *nm_ifname, const struct nmreq *req, uint
 	char HashColision[MAX_RINGS][MAX_SOCKETS_PER_RING] = {0};
 	int uniqueRings;
 	int hash_colision_cnt = 0;
-	char *cnfif_file = new char[IFNAMSIZ*2];
+	char *cnfif_file = new char[IFNAMSIZ+4];
 
 	strcpy(cnfif_file,ifname);
 	strcat(cnfif_file,".txt");
 
-	std::ifstream infile(cnfif_file);
-	if (!infile) {
-		printf("configuration file %s not found\n", cnfif_file);
-		return NULL;
-	}
-	while (std::getline(infile, line)) {
-		if ((line[0] == '#') || ((line[0] == '/') && (line[1] == '/'))) {
-			continue;
+	vector<string> cnf_if;
+
+	ifstream infile(cnfif_file);
+	if (infile) {
+		while (getline(infile, line)) {
+			if ((line[0] == '#') || ((line[0] == '/') && (line[1] == '/'))) {
+				continue;
+			}
+			cnf_if.push_back(line);
 		}
+	} else {
+		cnf_if.push_back(opts_line);
+	}
+
+	while (!cnf_if.empty()) {
+		line = cnf_if.back();
+		cnf_if.pop_back();
 		std::istringstream iss(line);
 		struct flow_param flow;
 		if (iss >> ip >> port) {
@@ -433,6 +528,7 @@ struct nm_desc *nm_open_vma(const char *nm_ifname, const struct nmreq *req, uint
 			break;
 		}
 	}
+
 	d->req.nr_rx_rings = ring_id;
 	d->req.nr_ringid = ring_id;
 
@@ -513,6 +609,58 @@ static inline int cb_buffer_read(int ring, vma_completion_cb_t *completion)
 	return pRings[ring]->vma_api->vma_cyclic_buffer_read(pRings[ring]->ring_fd, completion, pRings[ring]->min_s, pRings[ring]->max_s, pRings[ring]->flags);
 }
 
+static inline int cb_buffer_is_readable(int ring)
+{
+	return pRings[ring]->vma_api->vma_cyclic_buffer_is_readable(pRings[ring]->ring_fd);
+}
+
+// delay_ms(10) - 1ms
+static void delay_ms(int ms)
+{
+	int start_time_ms, now_time_ms, time_diff;
+	struct timespec start;
+	struct timespec now;
+
+	clock_gettime(CLOCK_REALTIME, &start);
+	start_time_ms = ((double)(start.tv_nsec)/1e9)*10000; // 0.1ms
+
+	while(1) {
+		clock_gettime(CLOCK_REALTIME, &now);
+		now_time_ms = ((double)(now.tv_nsec)/1e9)*10000;
+		time_diff = now_time_ms - start_time_ms;
+		if (time_diff < 0) {
+			time_diff += 1000000000;
+		}
+		if (time_diff > ms) {
+			break;
+		}
+		usleep(0);
+	}
+}
+
+extern "C"
+int poll_vma(struct nm_desc *d, int timeout)
+{
+	int ret = 0;
+
+	if (timeout == 0) {
+		 return cb_buffer_is_readable(d->req.nr_ringid);
+	}
+	if (timeout > 0) {
+		while (timeout--) {
+			ret = cb_buffer_is_readable(d->req.nr_ringid);
+			if (ret)
+				return ret;
+			delay_ms(10); // daly 1ms
+		}
+	} else if (timeout < 0) {
+		while(!ret) {
+			ret = cb_buffer_is_readable(d->req.nr_ringid);
+		}
+	}
+	return ret;
+}
+
 extern "C"
 u_char *nm_nextpkt_vma(struct nm_desc *d, struct nm_pkthdr *hdr)
 {
@@ -533,7 +681,6 @@ u_char *nm_nextpkt_vma(struct nm_desc *d, struct nm_pkthdr *hdr)
 		hdr->buf = data = ((uint8_t *)completion.payload_ptr);
 		break;
 	}
-
 	return (u_char *)data;
 }
 
@@ -575,7 +722,6 @@ int nm_dispatch_vma(struct nm_desc *d, int cnt, nm_cb_t cb, u_char *arg)
 	if (d->hdr.buf) {
 		cb(arg, &d->hdr, d->hdr.buf);
 	}
-
 	return got;
 }
 
@@ -586,7 +732,6 @@ int nm_close_vma(struct nm_desc *d)
 	if (d == NULL) {
 		return EINVAL;
 	}
-
 	free(d);
 	return 0;
 }
