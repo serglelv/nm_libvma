@@ -133,6 +133,9 @@ class CommonCyclicRing {
 	size_t	min_s;
 	size_t	max_s;
 	int 	flags;
+	int	sleep_time;
+	struct vma_completion_cb_t completion;
+	bool	is_readable;
 	void PrintInfo();
 	void printTime();
 };
@@ -427,7 +430,7 @@ struct nm_desc *nm_open_vma(const char *nm_ifname, const struct nmreq *req, uint
 	memcpy(nm_ring_val, nm_ring, nm_ring_len);
 	nm_ring_val[nm_ring_len] = '\0';
 
-	printf("nm_ring_val=%s nm_mode=%c nm_port=%s\n", nm_ring_val, nm_mode, nm_port);
+	printf("=> nm_ring_val=%s nm_mode=%c nm_port=%s\n", nm_ring_val, nm_mode, nm_port);
 
 	if (getifaddrs(&ifaddr) == -1) {
 		printf("error getifaddrs\n");
@@ -584,7 +587,10 @@ struct nm_desc *nm_open_vma(const char *nm_ifname, const struct nmreq *req, uint
 			pRings[i]->max_s = 5000;
 			pRings[i]->flags = MSG_DONTWAIT;
 			pRings[i]->vma_api = vma_get_api();
+			pRings[i]->sleep_time = 1;
+			pRings[i]->is_readable = false;
 			init_ring_helper(pRings[i]);
+
 		}
 	}
 	return d;
@@ -603,15 +609,23 @@ void init_ring_helper(CommonCyclicRing* pRing)
 	}
 }
 
-static inline int cb_buffer_read(int ring, vma_completion_cb_t *completion)
+static inline int cb_buffer_read(int ring)
 {
-	completion->packets = 0;
-	return pRings[ring]->vma_api->vma_cyclic_buffer_read(pRings[ring]->ring_fd, completion, pRings[ring]->min_s, pRings[ring]->max_s, pRings[ring]->flags);
+	pRings[ring]->completion.packets = 0;
+	return pRings[ring]->vma_api->vma_cyclic_buffer_read(pRings[ring]->ring_fd, &pRings[ring]->completion, pRings[ring]->min_s, pRings[ring]->max_s, pRings[ring]->flags);
 }
 
 static inline int cb_buffer_is_readable(int ring)
 {
-	return pRings[ring]->vma_api->vma_cyclic_buffer_is_readable(pRings[ring]->ring_fd);
+	pRings[ring]->completion.packets = 0;
+	if (pRings[ring]->vma_api->vma_cyclic_buffer_read(pRings[ring]->ring_fd, &pRings[ring]->completion, pRings[ring]->min_s, pRings[ring]->max_s, pRings[ring]->flags) < 0) {
+		return -1;
+	}
+	if (pRings[ring]->completion.packets) {
+		pRings[ring]->is_readable = true;
+		return 1;
+	}
+	return 0;
 }
 
 // delay_ms(10) - 1ms
@@ -643,19 +657,22 @@ int poll_vma(struct nm_desc *d, int timeout)
 {
 	int ret = 0;
 
+	int ring = d->req.nr_ringid;
+	pRings[ring]->is_readable = true;
+
 	if (timeout == 0) {
-		 return cb_buffer_is_readable(d->req.nr_ringid);
+		 return cb_buffer_is_readable(ring);
 	}
 	if (timeout > 0) {
 		while (timeout--) {
-			ret = cb_buffer_is_readable(d->req.nr_ringid);
+			ret = cb_buffer_is_readable(ring);
 			if (ret)
 				return ret;
 			delay_ms(10); // daly 1ms
 		}
 	} else if (timeout < 0) {
 		while(!ret) {
-			ret = cb_buffer_is_readable(d->req.nr_ringid);
+			ret = cb_buffer_is_readable(ring);
 		}
 	}
 	return ret;
@@ -666,19 +683,26 @@ u_char *nm_nextpkt_vma(struct nm_desc *d, struct nm_pkthdr *hdr)
 {
 	int ring = d->req.nr_ringid;
 	uint8_t *data = NULL;
-	struct vma_completion_cb_t completion;
+	struct vma_completion_cb_t *completion = &pRings[ring]->completion;
+
+	if (pRings[ring]->is_readable) {
+		pRings[ring]->is_readable = false;
+		hdr->len = hdr->caplen = completion->packets * STRIDE_SIZE;
+		hdr->buf = data = ((uint8_t *)completion->payload_ptr);
+		return (u_char *)data;
+	}
 
 	for (int j = 0; j < 10; j++) {
-		int res = cb_buffer_read(ring, &completion);
+		int res = cb_buffer_read(ring);
 		if (res == -1) {
 			printf("vma_cyclic_buffer_read returned -1");
 			return NULL;
 		}
-		if (completion.packets == 0) {
+		if (completion->packets == 0) {
 			continue;
 		}
-		hdr->len = hdr->caplen = completion.packets * STRIDE_SIZE;
-		hdr->buf = data = ((uint8_t *)completion.payload_ptr);
+		hdr->len = hdr->caplen = completion->packets * STRIDE_SIZE;
+		hdr->buf = data = ((uint8_t *)completion->payload_ptr);
 		break;
 	}
 	return (u_char *)data;
@@ -688,8 +712,8 @@ extern "C"
 int nm_dispatch_vma(struct nm_desc *d, int cnt, nm_cb_t cb, u_char *arg)
 {
 	NOT_IN_USE(arg);
-	struct vma_completion_cb_t completion;
 	int ring = d->req.nr_ringid;
+	struct vma_completion_cb_t *completion = &pRings[ring]->completion;
 	//int n = d->last_rx_ring - d->first_rx_ring + 1;
 	//int ri = d->cur_rx_ring;
 	int c = 0, got = 0;
@@ -706,18 +730,18 @@ int nm_dispatch_vma(struct nm_desc *d, int cnt, nm_cb_t cb, u_char *arg)
 	// <tbd>
 	for (c = 0; cnt != got; c++) {
 		//
-		int res = cb_buffer_read(ring, &completion);
+		int res = cb_buffer_read(ring);
 		if (res == -1) {
 			printf("vma_cyclic_buffer_read returned -1");
 			return 0;
 		}
-		if (completion.packets == 0) {
+		if (completion->packets == 0) {
 			continue;
 		}
 		// <tbd>
 		got++;
-		d->hdr.len = d->hdr.caplen = completion.packets * STRIDE_SIZE;
-		d->hdr.buf = ((uint8_t *)completion.payload_ptr);
+		d->hdr.len = d->hdr.caplen = completion->packets * STRIDE_SIZE;
+		d->hdr.buf = ((uint8_t *)completion->payload_ptr);
 	}
 	if (d->hdr.buf) {
 		cb(arg, &d->hdr, d->hdr.buf);
