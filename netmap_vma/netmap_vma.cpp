@@ -679,7 +679,7 @@ int poll_vma(struct nm_desc *d, int timeout)
 }
 
 extern "C"
-u_char *nm_nextpkt_vma(struct nm_desc *d, struct nm_pkthdr *hdr)
+u_char *nm_next_pkts_vma(struct nm_desc *d, struct nm_pkthdr *hdr)
 {
 	int ring = d->req.nr_ringid;
 	uint8_t *data = NULL;
@@ -687,8 +687,12 @@ u_char *nm_nextpkt_vma(struct nm_desc *d, struct nm_pkthdr *hdr)
 
 	if (pRings[ring]->is_readable) {
 		pRings[ring]->is_readable = false;
-		hdr->len = hdr->caplen = completion->packets * STRIDE_SIZE;
+		hdr->len = hdr->caplen = completion->packets;
 		hdr->buf = data = ((uint8_t *)completion->payload_ptr);
+
+		d->hdr.buf = data;
+		d->hdr.len = completion->packets;
+		d->hdr.caplen = 0;
 		return (u_char *)data;
 	}
 
@@ -701,9 +705,34 @@ u_char *nm_nextpkt_vma(struct nm_desc *d, struct nm_pkthdr *hdr)
 		if (completion->packets == 0) {
 			continue;
 		}
-		hdr->len = hdr->caplen = completion->packets * STRIDE_SIZE;
+		hdr->len = hdr->caplen = completion->packets;
 		hdr->buf = data = ((uint8_t *)completion->payload_ptr);
+		d->hdr.buf = data;
+		d->hdr.len = completion->packets;
+		d->hdr.caplen = 0;
 		break;
+	}
+	return (u_char *)data;
+}
+
+extern "C"
+u_char *nm_nextpkt_vma(struct nm_desc *d, struct nm_pkthdr *hdr)
+{
+	uint8_t *data = NULL;
+	struct nm_pkthdr r_hdr;
+
+	if (!d->hdr.caplen) {
+		data = hdr->buf = nm_next_pkts_vma(d, &r_hdr);
+		hdr->len = hdr->caplen = STRIDE_SIZE;
+		d->hdr.caplen += 1;
+	} else {
+		hdr->len = hdr->caplen = STRIDE_SIZE;
+		data = hdr->buf = d->hdr.buf + d->hdr.caplen * STRIDE_SIZE;
+		d->hdr.caplen += 1;
+		if (d->hdr.caplen >= d->hdr.len) {
+			d->hdr.caplen = 0;
+			data = hdr->buf = NULL;
+		}
 	}
 	return (u_char *)data;
 }
