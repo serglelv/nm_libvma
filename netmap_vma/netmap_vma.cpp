@@ -617,14 +617,17 @@ static inline int cb_buffer_read(int ring)
 
 static inline int cb_buffer_is_readable(int ring)
 {
-	pRings[ring]->completion.packets = 0;
-	if (pRings[ring]->vma_api->vma_cyclic_buffer_read(pRings[ring]->ring_fd, &pRings[ring]->completion, pRings[ring]->min_s, pRings[ring]->max_s, pRings[ring]->flags) < 0) {
-		return -1;
+	for (int j = 0; j < 10; j++) {
+		pRings[ring]->completion.packets = 0;
+		if (pRings[ring]->vma_api->vma_cyclic_buffer_read(pRings[ring]->ring_fd, &pRings[ring]->completion, pRings[ring]->min_s, pRings[ring]->max_s, pRings[ring]->flags) < 0) {
+			return -1;
+		}
+		if (pRings[ring]->completion.packets) {
+			pRings[ring]->is_readable = true;
+			return 1;
+		}
 	}
-	if (pRings[ring]->completion.packets) {
-		pRings[ring]->is_readable = true;
-		return 1;
-	}
+	usleep(pRings[ring]->sleep_time);
 	return 0;
 }
 
