@@ -656,7 +656,7 @@ static void delay_ms(int ms)
 }
 
 extern "C"
-int poll_vma(struct nm_desc *d, int timeout)
+int poll_nm_vma(struct nm_desc *d, int timeout)
 {
 	int ret = 0;
 

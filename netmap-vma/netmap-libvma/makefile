@@ -1,14 +1,14 @@
 
+TOP_DIR = ..
+include $(TOP_DIR)/nm_vma.mk
 
-VMA_DIR = /your-path/libvma
+TARGET=netmap_vma.so
 
-CPPFLAGS = -DHAVE_MP_RQ -DNETMAP_VMA -I$(VMA_DIR)/src/vma
-
-CPPFLAGS += -Wall -Werror -Wunused
-CPPFLAGS += -O3 -fPIC -m64 -g  -I$(VMA_DIR)/src/vma -I$(VMA_DIR)/src 
+CPPFLAGS = -Wall -Werror -Wunused -O3 -fPIC -m64 -g
+CPPFLAGS += -DHAVE_MP_RQ -DNETMAP_VMA -I$(VMA_SRC_DIR)/src/vma -I$(VMA_SRC_DIR)/src
 
 LDFLAGS = -shared
-LIBS = -lpthread  -lrt
+LIBS = -lpthread -lrt
 
 .PHONY : clean
 
@@ -16,12 +16,10 @@ SOURCES = $(shell echo *.cpp)
 HEADERS = $(shell echo *.h)
 OBJECTS=$(SOURCES:.cpp=.o)
 
-TARGET=netmap_vma.so
-
 all: $(TARGET)
 
 clean:
 	rm -f $(OBJECTS) $(TARGET)
-    
+
 $(TARGET) : $(OBJECTS)
 	$(CC) $(CFLAGS) $(OBJECTS) -o $@ $(LDFLAGS) $(LIBS)

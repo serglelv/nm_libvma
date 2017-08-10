@@ -1,0 +1,11 @@
+*.o
+*.d
+.*.cmd
+*.ko
+*.mod.c
+*.orig
+.*.swp
+*.so
+.cproject 
+.project 
+/.ptp-sync/
