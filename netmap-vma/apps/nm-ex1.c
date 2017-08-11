@@ -20,6 +20,7 @@ static const bool block = true;
 /* packet processing */
 static void handle(const uint8_t *pkt, size_t len)
 {
+#ifndef NETMAP_VMA
 	if (len < ETHERNET_HEADER_LEN + IP_HEADER_MINSIZE)
 	{
 		return;
@@ -34,8 +35,27 @@ static void handle(const uint8_t *pkt, size_t len)
 	if (ip_get_version(ip) != 4) {
 		return;
 	}
-	//printf("ip_get_len=%d\n", ip_get_len(ip));
-	//printf("ip_get_proto=%d\n", ip_get_proto(ip));
+	//printf("ip_get_len=%d ip_get_proto=%d\n", ip_get_len(ip), ip_get_proto(ip));
+
+#else
+	size_t k, packets = len;
+
+	for (k = 0; k < packets; k++) {
+
+		if (ethernet_get_lentype(pkt) != ETHERNET_TYPE_IP)
+		{
+			return;
+		}
+
+		const uint8_t *ip = &pkt[ETHERNET_HEADER_LEN];
+		if (ip_get_version(ip) != 4) {
+			return;
+		}
+		//printf("ip_get_len=%d ip_get_proto=%d\n", ip_get_len(ip), ip_get_proto(ip));
+
+		pkt += STRIDE_SIZE;
+	}
+#endif
 }
 
 static void loop(struct nm_desc *d)
@@ -89,7 +109,7 @@ static void loop(struct nm_desc *d)
 
 		/* process all packets */
 		while ((buf = (uint8_t*)nm_nextpkt(d, &h))) {
-			/* process packet */
+			/* process packets */
 			handle(h.buf, h.len);
 		}
 #endif

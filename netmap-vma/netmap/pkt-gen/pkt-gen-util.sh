@@ -6,7 +6,7 @@ PORT=2000
 #########################
 # pkt-gen netmap TX 
 #########################
-IF="ens4f0"
+IF_TX="ens4f0"
 SRC_IP="12.12.12.12" ; SRC_MAC="7c:fe:90:12:22:f0"
 DST_IP="12.12.12.13" ; DST_MAC="7c:fe:90:12:23:04"
 
@@ -15,20 +15,20 @@ TX_RATE=""
 
 pkt_tx()
 {
-	./pkt-gen -i netmap:${IF} -f tx "${TX_RATE}" "${TX_COUNT}" -l ${PKT_SIZE} -s ${SRC_IP}:${PORT} -d ${DST_IP}:${PORT} -S ${SRC_MAC} -D ${DST_MAC}
+	./pkt-gen -i netmap:${IF_TX} -f tx "${TX_RATE}" "${TX_COUNT}" -l ${PKT_SIZE} -s ${SRC_IP}:${PORT} -d ${DST_IP}:${PORT} -S ${SRC_MAC} -D ${DST_MAC}
 }
 
 #########################
 # pkt-gen netmap_vma RX 
 #########################
+IF_RX="ens4f0"
 PRELOAD="LD_PRELOAD=/path_to_libvma/src/vma/.libs/libvma.so"
-LD_PATH="LD_LIBRARY_PATH=../../netmap-vma"
 
-IF="ens4f0"
+LD_PATH="LD_LIBRARY_PATH=../../netmap-vma"
 
 pkt_rx()
 {
-	sh -c "${PRELOAD} ${LD_PATH} ./pkt-gen-vma -i netmap:${IF}-1/R:${PORT} -f rx"
+	sh -c "${PRELOAD} ${LD_PATH} ./pkt-gen-vma -i netmap:${IF_RX}-1/R:${PORT} -f rx"
 }
 
 usage()

@@ -1,1 +1,1 @@
-netmap_libvma
+netmap_vma

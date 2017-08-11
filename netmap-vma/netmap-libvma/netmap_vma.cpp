@@ -30,55 +30,31 @@
  * SOFTWARE.
  */
 
-
-#include <unistd.h>
-#include <pthread.h>
-#include <stdlib.h>
-#include <netinet/in.h>
 #include <arpa/inet.h>
 #include <stdio.h>
-#include <errno.h>
-
-#include <iostream>
-#include <cmath>
-#include <cerrno>
-#include <cstring>
-#include <clocale>
-#include <vector>
-#include <string>
-#include <sstream>
-#include <fstream>
-
-#include <netinet/ip.h>
-#include <netinet/tcp.h>
 #include <linux/socket.h>
-#include <sys/mman.h>
-#include <sys/time.h>
-#include <signal.h>
-#include <linux/if_ether.h>
 #include <ifaddrs.h>
 #include <netdb.h>
-#include <linux/if_packet.h>
-#include <netinet/udp.h>
-#include <netinet/ip.h>
-#include <linux/filter.h>
-#include <sys/mman.h>
-#include <poll.h>
-#include <linux/net_tstamp.h>
-#include <dlfcn.h>
-
+#include <iostream>
+#include <cstring>
+#include <vector>
+#include <sstream>
+#include <fstream>
 #include "vma/util/vtypes.h"
 #include "vma_extra.h"
 
 #ifdef HAVE_MP_RQ
-#define HAVE_MP_RQ_NETMAP
 #define NETMAP_WITH_LIBS
 #include <net/netmap_user.h>
-#endif
 
 using namespace std;
 
-#ifdef HAVE_MP_RQ_NETMAP
+/* buffer size is 2^17 = 128MB */
+#define	VMA_CYCLIC_BUFFER_SIZE	(1<<17)
+#define	VMA_CYCLIC_BUFFER_USER_PKT_SIZE	1400
+#define	VMA_CYCLIC_BUFFER_MIN_PKTS	1000
+#define	VMA_CYCLIC_BUFFER_MAX_PKTS	5000
+#define	VMA_NM_SLEEP	1
 
 #define	MAX_RINGS	1000
 #define	PRINT_PERIOD_SEC	5
@@ -89,18 +65,9 @@ using namespace std;
 class RXSock;
 class CommonCyclicRing;
 
-typedef void (*validatePackets)(uint8_t*, size_t, CommonCyclicRing*);
-typedef void (*validatePacket)(uint8_t*, RXSock*);
-typedef void (*printInfo)(RXSock*);
-typedef void* (*Process_func)(void*);
-
 class RXSock {
 public:
-	uint64_t	rxCount;
-	int		rxDrop;
 	uint64_t	statTime;
-	int		lastBlockId;
-	int		LastSequenceNumber;
 	int		lastPacketType;
 	int		index;
 	int		fd;
@@ -110,8 +77,6 @@ public:
 	struct ip_mreqn	mc;
 	char		ipAddress[INET_ADDRSTRLEN];
 	int bad_packets;
-	validatePacket	fvalidatePacket;
-	printInfo	fprintinfo;
 };
 
 class CommonCyclicRing {
@@ -136,8 +101,6 @@ class CommonCyclicRing {
 	int	sleep_time;
 	struct vma_completion_cb_t completion;
 	bool	is_readable;
-	void PrintInfo();
-	void printTime();
 };
 
 struct flow_param {
@@ -151,7 +114,7 @@ static unsigned short hashIpPort2(sockaddr_in addr )
 	int hash = ((size_t)(addr.sin_addr.s_addr) * 59) ^ ((size_t)(addr.sin_port) << 16);
 	unsigned char smallHash = (unsigned char)(((unsigned char) ((hash*19) >> 24 ) )  ^ ((unsigned char) ((hash*17) >> 16 )) ^ ((unsigned char) ((hash*5) >> 8) ) ^ ((unsigned char) hash));
 	unsigned short mhash = ((((addr.sin_addr.s_addr >>24) & 0x7) << 8) | smallHash ) ;
-//	printf("0x%x\n",addr.sin_addr.s_addr);
+	//printf("0x%x\n",addr.sin_addr.s_addr);
 	return mhash;
 }
 
@@ -371,12 +334,7 @@ struct nm_desc *nm_open_vma(const char *nm_ifname, const struct nmreq *req, uint
 	struct ifaddrs *ifaddr, *ifa;
 	char host[NI_MAXHOST];
 
-	d = (struct nm_desc *)calloc(1, sizeof(*d));
-	if (d == NULL) {
-		errno = ENOMEM;
-		return NULL;
-	}
-
+	d = new nm_desc();
 	if (strncmp(nm_ifname, "netmap:", 7)) {
 		errno = 0;
 		printf("name not recognised\n");
@@ -421,16 +379,16 @@ struct nm_desc *nm_open_vma(const char *nm_ifname, const struct nmreq *req, uint
 
 	string nmport;
 	if ( nm_port == NULL) {
-		string default_port;
-		cout << default_port << DEFAULT_PORT << endl;
-		nmport.append(default_port);
-	} else
+		ostringstream s;
+		s << DEFAULT_PORT;
+		nmport.append(s.str());
+		printf("nm_mode=%c nm_port=%d\n", nm_mode, DEFAULT_PORT);
+	} else {
 		nmport.append(nm_port);
-
-	memcpy(nm_ring_val, nm_ring, nm_ring_len);
-	nm_ring_val[nm_ring_len] = '\0';
-
-	printf("=> nm_ring_val=%s nm_mode=%c nm_port=%s\n", nm_ring_val, nm_mode, nm_port);
+		memcpy(nm_ring_val, nm_ring, nm_ring_len);
+		nm_ring_val[nm_ring_len] = '\0';
+		printf("nm_ring_val=%s nm_mode=%c nm_port=%s\n", nm_ring_val, nm_mode, nm_port);
+	}
 
 	if (getifaddrs(&ifaddr) == -1) {
 		printf("error getifaddrs\n");
@@ -446,6 +404,7 @@ struct nm_desc *nm_open_vma(const char *nm_ifname, const struct nmreq *req, uint
 				printf("error getnameinfo\n");
 				return NULL;
 			}
+			break;
 		}
 	}
 	freeifaddrs(ifaddr);
@@ -453,7 +412,6 @@ struct nm_desc *nm_open_vma(const char *nm_ifname, const struct nmreq *req, uint
 	string opts_line;
 	opts_line.append(host);
 	opts_line = opts_line + " " + nmport + " " + nmring;
-	//cout << "opts_line" << opts_line << '\n';
 
 	bool ringPerFd = false;
 	for (int j = 0; j < MAX_RINGS; j++) {
@@ -464,15 +422,13 @@ struct nm_desc *nm_open_vma(const char *nm_ifname, const struct nmreq *req, uint
 	std::string line;
 	int port;
 	int ring_id;
-	int lineNum = 0;
 	int sock_num = 0, socketRead = 0;
 	char HashColision[MAX_RINGS][MAX_SOCKETS_PER_RING] = {0};
 	int uniqueRings;
 	int hash_colision_cnt = 0;
 	char *cnfif_file = new char[IFNAMSIZ+4];
 
-	strcpy(cnfif_file,ifname);
-	strcat(cnfif_file,".txt");
+	snprintf(cnfif_file, IFNAMSIZ+4, "%s.txt", ifname);
 
 	vector<string> cnf_if;
 
@@ -493,7 +449,7 @@ struct nm_desc *nm_open_vma(const char *nm_ifname, const struct nmreq *req, uint
 		cnf_if.pop_back();
 		std::istringstream iss(line);
 		struct flow_param flow;
-		if (iss >> ip >> port) {
+		if (iss >> ip >> port >> ring_id) {
 			socketRead++;
 			flow.addr.sin_family = AF_INET;
 			flow.addr.sin_port = htons(port);
@@ -509,14 +465,8 @@ struct nm_desc *nm_open_vma(const char *nm_ifname, const struct nmreq *req, uint
 		} else {
 			continue;
 		}
-		if (iss >> ring_id) {
-		} else {
-			printf("no common rings\n");
-			ring_id = lineNum;
-			lineNum++;
-			ringPerFd = true;
-		}
-		printf("ring_id = %d\n",ring_id);
+
+		printf("ring_id=%d\n",ring_id);
 		flow.ring_id = ring_id;
 		if (HashColision[ring_id][flow.hash] == 0) {
 			HashColision[ring_id][flow.hash] = 1;
@@ -539,10 +489,8 @@ struct nm_desc *nm_open_vma(const char *nm_ifname, const struct nmreq *req, uint
 	struct vma_api_t *vma_api = vma_get_api();
 	vma_ring_type_attr ring;
 	ring.ring_type = VMA_RING_CYCLIC_BUFFER;
-	// buffer size is 2^17 = 128MB
-	ring.ring_cyclicb.num = (1<<17);
-	// user packet size ( not including the un-scattered data
-	ring.ring_cyclicb.stride_bytes = 1400;
+	ring.ring_cyclicb.num = VMA_CYCLIC_BUFFER_SIZE;
+	ring.ring_cyclicb.stride_bytes = VMA_CYCLIC_BUFFER_USER_PKT_SIZE;
 	//ring.ring_cyclicb.comp_mask = VMA_RING_TYPE_MASK;
 	int res = vma_api->vma_add_ring_profile(&ring, &prof);
 	if (res) {
@@ -566,10 +514,6 @@ struct nm_desc *nm_open_vma(const char *nm_ifname, const struct nmreq *req, uint
 				return NULL;
 			}
 			memcpy(&pSock->mc, &mc, sizeof(mc));
-			pSock->LastSequenceNumber = -1;
-			pSock->lastBlockId = -1;
-			pSock->rxCount = 0;
-			pSock->rxDrop = 0;
 			pSock->statTime = time_get_usec() + 1000*i;
 			pSock->index = i;
 			pSock->bad_packets = 0;
@@ -583,14 +527,13 @@ struct nm_desc *nm_open_vma(const char *nm_ifname, const struct nmreq *req, uint
 			pRings[i]->hashedSock[hash] = pSock;
 			inet_ntop(AF_INET, &((*it)->sin_addr), pSock->ipAddress, INET_ADDRSTRLEN);
 			pRings[i]->sock_vect.push_back(pSock);
-			pRings[i]->min_s = 1000;
-			pRings[i]->max_s = 5000;
+			pRings[i]->min_s = VMA_CYCLIC_BUFFER_MIN_PKTS;
+			pRings[i]->max_s = VMA_CYCLIC_BUFFER_MAX_PKTS;
 			pRings[i]->flags = MSG_DONTWAIT;
 			pRings[i]->vma_api = vma_get_api();
-			pRings[i]->sleep_time = 1;
+			pRings[i]->sleep_time = VMA_NM_SLEEP;
 			pRings[i]->is_readable = false;
 			init_ring_helper(pRings[i]);
-
 		}
 	}
 	return d;
@@ -627,7 +570,7 @@ static inline int cb_buffer_is_readable(int ring)
 			return 1;
 		}
 	}
-	usleep(pRings[ring]->sleep_time);
+	//usleep(pRings[ring]->sleep_time);
 	return 0;
 }
 
@@ -682,7 +625,7 @@ int poll_nm_vma(struct nm_desc *d, int timeout)
 }
 
 extern "C"
-u_char *nm_next_pkts_vma(struct nm_desc *d, struct nm_pkthdr *hdr)
+u_char *nm_nextpkt_vma(struct nm_desc *d, struct nm_pkthdr *hdr)
 {
 	int ring = d->req.nr_ringid;
 	uint8_t *data = NULL;
@@ -719,35 +662,11 @@ u_char *nm_next_pkts_vma(struct nm_desc *d, struct nm_pkthdr *hdr)
 }
 
 extern "C"
-u_char *nm_nextpkt_vma(struct nm_desc *d, struct nm_pkthdr *hdr)
-{
-	uint8_t *data = NULL;
-	struct nm_pkthdr r_hdr;
-
-	if (!d->hdr.caplen) {
-		data = hdr->buf = nm_next_pkts_vma(d, &r_hdr);
-		hdr->len = hdr->caplen = STRIDE_SIZE;
-		d->hdr.caplen += 1;
-	} else {
-		hdr->len = hdr->caplen = STRIDE_SIZE;
-		data = hdr->buf = d->hdr.buf + d->hdr.caplen * STRIDE_SIZE;
-		d->hdr.caplen += 1;
-		if (d->hdr.caplen >= d->hdr.len) {
-			d->hdr.caplen = 0;
-			data = hdr->buf = NULL;
-		}
-	}
-	return (u_char *)data;
-}
-
-extern "C"
 int nm_dispatch_vma(struct nm_desc *d, int cnt, nm_cb_t cb, u_char *arg)
 {
 	NOT_IN_USE(arg);
 	int ring = d->req.nr_ringid;
 	struct vma_completion_cb_t *completion = &pRings[ring]->completion;
-	//int n = d->last_rx_ring - d->first_rx_ring + 1;
-	//int ri = d->cur_rx_ring;
 	int c = 0, got = 0;
 	d->hdr.buf = NULL;
 	d->hdr.flags = NM_MORE_PKTS;
@@ -759,9 +678,7 @@ int nm_dispatch_vma(struct nm_desc *d, int cnt, nm_cb_t cb, u_char *arg)
 	 * of buffers and the int is large enough that we never wrap,
 	 * so we can omit checking for -1
 	 */
-	// <tbd>
 	for (c = 0; cnt != got; c++) {
-		//
 		int res = cb_buffer_read(ring);
 		if (res == -1) {
 			printf("vma_cyclic_buffer_read returned -1");
@@ -770,9 +687,8 @@ int nm_dispatch_vma(struct nm_desc *d, int cnt, nm_cb_t cb, u_char *arg)
 		if (completion->packets == 0) {
 			continue;
 		}
-		// <tbd>
 		got++;
-		d->hdr.len = d->hdr.caplen = completion->packets * STRIDE_SIZE;
+		d->hdr.len = d->hdr.caplen = completion->packets;
 		d->hdr.buf = ((uint8_t *)completion->payload_ptr);
 	}
 	if (d->hdr.buf) {
@@ -788,7 +704,7 @@ int nm_close_vma(struct nm_desc *d)
 	if (d == NULL) {
 		return EINVAL;
 	}
-	free(d);
+	delete d;
 	return 0;
 }
 #endif

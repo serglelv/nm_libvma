@@ -1,7 +1,13 @@
-1. sudo insmod netmap.ko
-2. Configure the pkt-gen-util.sh script
-   2.1 Set your interface and IP_SRC and MAC_DST
 
-   IF="eth0"
-   IP_SRC="XX.XX.XX.XX" ; MAC_SRC="XX:XX:XX:XX:XX:XX"
-   IP_DST="XX.XX.XX.XX" ; MAC_DST="XX:XX:XX:XX:XX:XX"
+The script pkt-gen-util.sh requires some small modifications.
+
+* $./pkt-gen-util.sh -t
+  The script pkt-gen-util.sh (tx mode) should be configured to 
+  use the netmap API. You need modify the following parameters: 
+  IF_TX, SRC_IP, SRC_MAC, DST_IP and DST_MAC
+
+* $./pkt-gen-util.sh -r
+  The script pkt-gen-vma (rx mode) should be configured to use 
+  the netmap_vma API. You need modify the following parameters: 
+  PRELOAD and IF_RX
+  

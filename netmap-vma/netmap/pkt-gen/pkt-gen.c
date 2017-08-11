@@ -1813,6 +1813,7 @@ receiver_body(void *data)
 	struct nm_pkthdr h;
 	u_char *buf;
 	const uint8_t *ip;
+	uint32_t p;
 
 	while (!targ->cancel) {
 
@@ -1821,17 +1822,18 @@ receiver_body(void *data)
 			break;
 		}
 		while ((buf = nm_nextpkt(targ->nmd, &h))) {
-
-			ip = &h.buf[ETHERNET_HEADER_LEN];
-			if (ip_get_version(ip) != 4) {
-				printf("wrong ip_get_version\n");
-				break;
+			for(p = 0; p < h.len; p++) {
+				ip = &buf[ETHERNET_HEADER_LEN];
+				if (ip_get_version(ip) != 4) {
+					printf("wrong ip_get_version\n");
+					break;
+				}
+				//printf("ip_get_len=%d\n", ip_get_len(ip));
+				targ->ctr.pkts++;
+				targ->ctr.events++;
+				targ->ctr.bytes += ip_get_len(ip);
+				buf += STRIDE_SIZE;
 			}
-			//printf("ip_get_len=%d\n", ip_get_len(ip));
-			targ->ctr.pkts++;
-			targ->ctr.events++;
-			targ->ctr.bytes += ip_get_len(ip);
-			//targ->ctr.bytes += h.len; // STRIDE_SIZE
 		}
 	}
 

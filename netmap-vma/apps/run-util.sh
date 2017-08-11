@@ -1,9 +1,9 @@
 #!/bin/bash
 
-PRELOAD="LD_PRELOAD=/path_to_libvma/src/vma/.libs/libvma.so"
-LD_PATH="LD_LIBRARY_PATH=../netmap_vma"
-
 IF="ens4f0"
+PRELOAD="LD_PRELOAD=/path_to_libvma/src/vma/.libs/libvma.so"
+
+LD_PATH="LD_LIBRARY_PATH=../netmap_vma"
 
 APP=nm-ex1
 PORT=""
@@ -30,7 +30,9 @@ case "$1" in
 		run_test
 		;;
 	*)
-		echo "-r -vma"
+		echo "$0 -r -vma"
 		exit 0
 		;;
 esac
+
+# </run-util.sh>
